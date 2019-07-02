@@ -262,11 +262,11 @@ class bitbank (Exchange):
         if market:
             symbol = market['symbol']
         timestamp = self.safe_integer(order, 'ordered_at')
-        price = self.safe_float(order, 'price')
+        price = self.safe_float(order, 'price', 0)
         amount = self.safe_float(order, 'start_amount')
         filled = self.safe_float(order, 'executed_amount')
         remaining = self.safe_float(order, 'remaining_amount')
-        cost = filled * self.safe_float(order, 'average_price')
+        cost = filled * self.safe_float(order, 'average_price', 0)
         status = self.safe_string(order, 'status')
         # UNFILLED
         # PARTIALLY_FILLED
