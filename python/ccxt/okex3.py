@@ -433,6 +433,7 @@ class okex3 (Exchange):
                     '35031': InvalidOrder,  # {"code": 35031, "message": "Cancel order size too large"}
                     '35032': ExchangeError,  # {"code": 35032, "message": "Invalid user status"}
                     '35039': ExchangeError,  # {"code": 35039, "message": "Open order quantity exceeds limit"}
+                    '35040': InvalidOrder,  # {"error_message":"Invalid order type","result":"true","error_code":"35040","order_id":"-1"}
                     '35044': ExchangeError,  # {"code": 35044, "message": "Invalid order status"}
                     '35046': InsufficientFunds,  # {"code": 35046, "message": "Negative account balance"}
                     '35047': InsufficientFunds,  # {"code": 35047, "message": "Insufficient account balance"}
@@ -1128,17 +1129,15 @@ class okex3 (Exchange):
         for i in range(0, len(response)):
             balance = response[i]
             currencyId = self.safe_string(balance, 'currency')
-            code = self.common_currency_code(currencyId)
+            code = currencyId
+            if currencyId in self.currencies_by_id:
+                code = self.currencies_by_id[currencyId]['code']
+            else:
+                code = self.common_currency_code(currencyId)
             account = self.account()
-            total = self.safe_float(balance, 'balance')
-            used = self.safe_float(balance, 'hold')
-            free = self.safe_float(balance, 'available')
-            if free is None:
-                if (total is not None) and(used is not None):
-                    free = total - used
-            account['total'] = total
-            account['used'] = used
-            account['free'] = free
+            account['total'] = self.safe_float(balance, 'balance')
+            account['used'] = self.safe_float(balance, 'hold')
+            account['free'] = self.safe_float(balance, 'available')
             result[code] = account
         return self.parse_balance(result)
 
@@ -1191,6 +1190,7 @@ class okex3 (Exchange):
                 'liquidation_price',
                 'product_id',
                 'risk_rate',
+                'margin_ratio',
             ])
             keys = list(omittedBalance.keys())
             accounts = {}
@@ -1200,17 +1200,15 @@ class okex3 (Exchange):
                 if key.find(':') >= 0:
                     parts = key.split(':')
                     currencyId = parts[1]
-                    code = self.common_currency_code(currencyId)
+                    code = currencyId
+                    if currencyId in self.currencies_by_id:
+                        code = self.currencies_by_id[currencyId]['code']
+                    else:
+                        code = self.common_currency_code(currencyId)
                     account = self.account()
-                    total = self.safe_float(marketBalance, 'balance')
-                    used = self.safe_float(marketBalance, 'hold')
-                    free = self.safe_float(marketBalance, 'available')
-                    if free is None:
-                        if (total is not None) and(used is not None):
-                            free = total - used
-                    account['total'] = total
-                    account['used'] = used
-                    account['free'] = free
+                    account['total'] = self.safe_float(marketBalance, 'balance')
+                    account['used'] = self.safe_float(marketBalance, 'hold')
+                    account['free'] = self.safe_float(marketBalance, 'available')
                     accounts[code] = account
                 else:
                     raise NotSupported(self.id + ' margin balance response format has changednot ')
@@ -1261,14 +1259,8 @@ class okex3 (Exchange):
             balance = self.safe_value(info, lowercaseId, {})
             account = self.account()
             # it may be incorrect to use total, free and used for swap accounts
-            total = self.safe_float(balance, 'equity')
-            free = self.safe_float(balance, 'total_avail_balance')
-            used = None
-            if (total is not None) and(free is not None):
-                used = max(0, total - free)
-            account['total'] = total
-            account['used'] = used
-            account['free'] = free
+            account['total'] = self.safe_float(balance, 'equity')
+            account['free'] = self.safe_float(balance, 'total_avail_balance')
             result[code] = account
         return self.parse_balance(result)
 
@@ -1294,24 +1286,18 @@ class okex3 (Exchange):
         #
         # their root field name is "info", so our info will contain their info
         result = {'info': response}
-        info = self.safe_value(response, 'info', {})
-        lowercaseIds = list(info.keys())
-        for i in range(0, len(lowercaseIds)):
-            lowercaseId = lowercaseIds[i]
-            id = lowercaseId.upper()
-            code = self.common_currency_code(id)
-            balance = self.safe_value(info, lowercaseId, {})
+        info = self.safe_value(response, 'info', [])
+        for i in range(0, len(info)):
+            balance = info[i]
+            marketId = self.safe_string(balance, 'instrument_id')
+            symbol = marketId
+            if marketId in self.markets_by_id:
+                symbol = self.markets_by_id[marketId]['symbol']
             account = self.account()
             # it may be incorrect to use total, free and used for swap accounts
-            total = self.safe_float(balance, 'equity')
-            free = self.safe_float(balance, 'total_avail_balance')
-            used = None
-            if (total is not None) and(free is not None):
-                used = max(0, total - free)
-            account['total'] = total
-            account['used'] = used
-            account['free'] = free
-            result[code] = account
+            account['total'] = self.safe_float(balance, 'equity')
+            account['free'] = self.safe_float(balance, 'total_avail_balance')
+            result[symbol] = account
         return self.parse_balance(result)
 
     def fetch_balance(self, params={}):
@@ -1745,12 +1731,12 @@ class okex3 (Exchange):
     def fetch_order(self, id, symbol=None, params={}):
         if symbol is None:
             raise ArgumentsRequired(self.id + ' fetchOrder requires a symbol argument')
-        defaultType = self.safe_string_2(self.options, 'fetchOrder', 'defaultType')
+        self.load_markets()
+        market = self.market(symbol)
+        defaultType = self.safe_string_2(self.options, 'fetchOrder', 'defaultType', market['type'])
         type = self.safe_string(params, 'type', defaultType)
         if type is None:
             raise ArgumentsRequired(self.id + " fetchOrder requires a type parameter(one of 'spot', 'margin', 'futures', 'swap').")
-        self.load_markets()
-        market = self.market(symbol)
         instrumentId = 'InstrumentId' if (market['futures'] or market['swap']) else ''
         method = type + 'GetOrders' + instrumentId
         request = {
@@ -1960,6 +1946,7 @@ class okex3 (Exchange):
         #
         address = self.safe_string(depositAddress, 'address')
         tag = self.safe_string_2(depositAddress, 'tag', 'payment_id')
+        tag = self.safe_string(depositAddress, 'memo', tag)
         currencyId = self.safe_string(depositAddress, 'currency')
         code = None
         if currencyId is not None:
@@ -2143,16 +2130,28 @@ class okex3 (Exchange):
             type = 'deposit'
             address = addressFrom
         currencyId = self.safe_string(transaction, 'currency')
+        code = None
         if currencyId is not None:
-            currencyId = currencyId.upper()
-        code = self.common_currency_code(currencyId)
+            uppercaseId = currencyId
+            currencyId = currencyId.lower()
+            if currencyId in self.currencies_by_id:
+                currency = self.currencies_by_id[currencyId]
+                code = currency['code']
+            else:
+                code = self.common_currency_code(uppercaseId)
         amount = self.safe_float(transaction, 'amount')
         status = self.parse_transaction_status(self.safe_string(transaction, 'status'))
         txid = self.safe_string(transaction, 'txid')
         timestamp = self.parse8601(self.safe_string(transaction, 'timestamp'))
-        feeCost = self.safe_float(transaction, 'fee')
+        feeCost = None
         if type == 'deposit':
             feeCost = 0
+        else:
+            if currencyId is not None:
+                feeWithCurrencyId = self.safe_string(transaction, 'fee')
+                if feeWithCurrencyId is not None:
+                    feeWithoutCurrencyId = feeWithCurrencyId.replace(currencyId, '')
+                    feeCost = float(feeWithoutCurrencyId)
         # todo parse tags
         return {
             'info': transaction,
@@ -2539,6 +2538,7 @@ class okex3 (Exchange):
         }
         before = None
         after = self.safe_float(item, 'balance')
+        status = 'ok'
         return {
             'info': item,
             'id': id,
@@ -2550,6 +2550,7 @@ class okex3 (Exchange):
             'amount': amount,
             'before': before,  # balance before
             'after': after,  # balance after
+            'status': status,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
             'fee': fee,
@@ -2586,7 +2587,8 @@ class okex3 (Exchange):
                     body = jsonQuery
                     auth += jsonQuery
                 headers['Content-Type'] = 'application/json'
-            headers['OK-ACCESS-SIGN'] = self.hmac(self.encode(auth), self.encode(self.secret), hashlib.sha256, 'base64')
+            signature = self.hmac(self.encode(auth), self.encode(self.secret), hashlib.sha256, 'base64')
+            headers['OK-ACCESS-SIGN'] = self.decode(signature)
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
 
     def get_path_authentication_type(self, path):
